@@ -56,3 +56,31 @@ docker build --build-arg CRON_DATABASE=mydb -t my-postgres .
 ## Runtime
 
 Configuration is the same as the official image: `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB` apply only when the data directory is empty. See the [official image documentation](https://hub.docker.com/_/postgres).
+
+## Backups
+
+The tools are there for two kinds of backup:
+
+- **Logical dump**: `pg_dump` piped through `age` (public-key encryption) to `rclone`, so a dump is encrypted before it leaves the container and nothing is written to the container's disk.
+
+  ```sh
+  pg_dump -Fc --no-owner "$PGDATABASE" | age -r "$AGE_RECIPIENT" | rclone rcat "$DEST/dump-$(date -u +%Y%m%dT%H%M%SZ).age"
+  ```
+
+  Only the public key goes into the container. Restore with `rclone cat ... | age -d -i <key file> | pg_restore`.
+- **Physical backup and point-in-time recovery**: pgBackRest. It needs WAL archiving, so `archive_mode`, `wal_level` and `archive_command` are not set in the image. Set them at start-up for a database that uses pgBackRest; an `archive_command` that keeps failing makes WAL pile up on the disk.
+
+## Tests
+
+```sh
+tests/run.sh      # build the image and check it: tools, each extension as a non-superuser, pg_cron, dump | age | rclone and the restore
+tests/backup.sh   # pgBackRest full backup, then point-in-time recovery to just before a mistake (needs the image from run.sh)
+```
+
+Both need Docker only. No secrets are used: passwords are throwaway, age keys are made inside the container, and the backups go to a local directory. GitHub Actions runs them on every push and every Monday, to catch breakage from base image or package repository updates.
+
+## Updating
+
+- **PostgreSQL / base image**: change the tag and the digest of `FROM` together, then `IMAGE_VERSION` (`<PostgreSQL version>.<revision>`).
+- **rclone**: change `RC_VERSION` and both `RC_SHA256_*` values (from the release's `SHA256SUMS`), and the version in the table above.
+- Run `tests/run.sh` and `tests/backup.sh` before publishing a new image.
