@@ -84,3 +84,9 @@ Both need Docker only. No secrets are used: passwords are throwaway, age keys ar
 - **PostgreSQL / base image**: change the tag and the digest of `FROM` together, then `IMAGE_VERSION` (`<PostgreSQL version>.<revision>`).
 - **rclone**: change `RC_VERSION` and both `RC_SHA256_*` values (from the release's `SHA256SUMS`), and the version in the table above.
 - Run `tests/run.sh` and `tests/backup.sh` before publishing a new image.
+
+## License
+
+The files in this repository (the `Dockerfile`, the tests and the documentation) are under the [PostgreSQL License](LICENSE).
+
+The image built from them contains other software, each under its own license: PostgreSQL, pgBackRest, age, rclone and the extensions. PostGIS, for example, is GPL-2.0-or-later. The license above does not change theirs.
