@@ -1,0 +1,21 @@
+name: test
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Weekly: catches breakage from base image or package repository updates.
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test
+        run: tests/run.sh
