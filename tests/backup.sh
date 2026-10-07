@@ -26,7 +26,8 @@ cleanup() {
 trap cleanup EXIT
 
 # pgBackRest reads its settings from the environment, so no config file is needed.
-ENVS=(-e PGBACKREST_STANZA=main -e "PGBACKREST_PG1_PATH=$PGDATA_DIR" -e PGBACKREST_REPO1_PATH=/var/lib/pgbackrest)
+# repo1-bundle puts the small files of a backup together: object storage takes a PUT for each file, and a small database is over a thousand.
+ENVS=(-e PGBACKREST_STANZA=main -e "PGBACKREST_PG1_PATH=$PGDATA_DIR" -e PGBACKREST_REPO1_PATH=/var/lib/pgbackrest -e PGBACKREST_REPO1_BUNDLE=y)
 VOLS=(-v "$DATA_VOL:/var/lib/postgresql" -v "$REPO_VOL:/var/lib/pgbackrest")
 PGARGS=(-c wal_level=replica -c archive_mode=on -c "archive_command=pgbackrest archive-push %p")
 
@@ -55,6 +56,10 @@ sql "insert into t select g, 'before-backup' from generate_series(1, 100) g" >/d
 out=$(pgb --type=full backup); rc=$?; expect_ok "full backup" $rc; [ $rc -ne 0 ] && echo "$out"
 expect_eq "info lists one full backup" "$(pgb info --output=json | python3 -c 'import sys,json; b=json.load(sys.stdin)[0]["backup"]; print(len(b), b[0]["type"])')" "1 full"
 out=$(pgb verify); rc=$?; expect_ok "verify the repository" $rc; [ $rc -ne 0 ] && echo "$out"
+bundled=$(docker exec "$NAME" sh -c 'find /var/lib/pgbackrest/backup/main/*/bundle -type f | wc -l')
+total=$(docker exec "$NAME" sh -c 'find /var/lib/pgbackrest/backup/main -type f | wc -l')
+echo "   files in the repository's backup: $total (in bundles: $bundled)"
+[ "$bundled" -ge 1 ] && [ "$total" -le 12 ]; expect_ok "the backup is in bundles (a few files, not one for each file of the database)" $?
 
 echo "== changes after the backup, then an accident"
 sql "insert into t select g, 'after-backup' from generate_series(101, 200) g" >/dev/null
