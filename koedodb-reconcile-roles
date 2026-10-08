@@ -1,0 +1,43 @@
+#!/bin/bash
+# koedodb-reconcile-roles passwords
+#
+# Run by KoedoDB's Job (not by hand) against a database that is running: it sets the passwords of the roles of a Project's database to the ones in its environment, and leaves everything else
+# as it is. The program is part of the image so that what a Job does is what this file says, and a change of it is a new image.
+#
+# The environment (the Job gives it):
+#   PGHOST PGUSER PGDATABASE PGPASSWORD    the database, as the superuser (koedodb_admin), over the network
+#   AUTH_DB_PASSWORD     the password of supabase_auth_admin (what Auth logs in as)
+#   REST_DB_PASSWORD     the password of authenticator (what PostgREST logs in as)
+#   CUSTOMER_DB_PASSWORD the password of postgres (what the customer logs in as)
+#
+# A role that does not exist is skipped, and so is a password that is empty. The passwords are read by psql from the environment (\getenv): they are in no command line, and the statement that
+# carries them is kept out of the server's log. It waits for the database for up to five minutes (the first start of a database takes a while), then tries once.
+set -eu
+
+mode="${1:-}"
+if [ "$mode" != passwords ]; then
+  echo "usage: koedodb-reconcile-roles passwords" >&2
+  exit 2
+fi
+
+export AUTH_DB_PASSWORD="${AUTH_DB_PASSWORD:-}" REST_DB_PASSWORD="${REST_DB_PASSWORD:-}" CUSTOMER_DB_PASSWORD="${CUSTOMER_DB_PASSWORD:-}"
+
+for _ in $(seq 1 60); do
+  pg_isready -q && break
+  sleep 5
+done
+
+psql -X -q -v ON_ERROR_STOP=1 <<'SQL'
+-- A failing statement is logged with its text by default, and the text holds a password.
+SET log_min_error_statement = 'panic';
+SET log_statement = 'none';
+\getenv authpw AUTH_DB_PASSWORD
+\getenv restpw REST_DB_PASSWORD
+\getenv customerpw CUSTOMER_DB_PASSWORD
+SELECT format('ALTER ROLE %I PASSWORD %L', r.rolname, p.pw)
+FROM (VALUES ('supabase_auth_admin', :'authpw'), ('authenticator', :'restpw'), ('postgres', :'customerpw')) AS p(role, pw)
+JOIN pg_roles AS r ON r.rolname = p.role
+WHERE p.pw <> ''
+\gexec
+SQL
+echo "koedodb-reconcile-roles: the passwords are set"

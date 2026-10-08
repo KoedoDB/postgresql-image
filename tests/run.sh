@@ -191,6 +191,28 @@ out=$(in_box "rclone cat :local:/tmp/remote/dump.age | age -d -i /tmp/key.txt | 
 expect_ok "rclone cat | age -d | pg_restore" "$out"
 expect_eq "decrypted restore has the same rows" "$(app_sql fromage "select count(*) from items")" "$count_src"
 
+# --- 7. koedodb-reconcile-roles ----------------------------------------------------------
+# The program of KoedoDB's Job that sets the passwords of a database's roles after its first start. The loopback and the socket are trusted by this image, so a password is only checked from
+# another address: the container's own.
+echo "== koedodb-reconcile-roles"
+in_box "test -x /usr/local/bin/koedodb-reconcile-roles" >/dev/null && ok "the program is in the image and executable" || bad "the program is in the image and executable"
+in_box "koedodb-reconcile-roles nothing" >/dev/null 2>&1; expect_eq "a mode it does not know is refused (status 2)" "$?" "2"
+admin_sql postgres "create role supabase_auth_admin login password 'old-auth'; create role authenticator login password 'old-rest'; create role postgres login password 'old-customer'" >/dev/null
+roles_job() {  # $1 = the three passwords, as environment settings
+  docker exec -e PGUSER="$ADMIN" -e PGPASSWORD=throwaway -e PGDATABASE=postgres $1 "$NAME" sh -c 'PGHOST="$(hostname -i)" koedodb-reconcile-roles passwords' 2>&1
+}
+network_login() {  # $1 = role, $2 = password
+  docker exec -e PGPASSWORD="$2" "$NAME" sh -c "psql -h \"\$(hostname -i)\" -U $1 -d postgres -tAc 'select 1'" 2>&1 | tail -1
+}
+out=$(roles_job "-e AUTH_DB_PASSWORD=new-auth-0123456789 -e REST_DB_PASSWORD=new-rest-0123456789 -e CUSTOMER_DB_PASSWORD=new-customer-0123456789")
+expect_ok "the Job's program sets the passwords" "$out"
+expect_eq "the customer's role has the new password" "$(network_login postgres new-customer-0123456789)" "1"
+expect_eq "Auth's and PostgREST's roles have theirs" "$(network_login supabase_auth_admin new-auth-0123456789)$(network_login authenticator new-rest-0123456789)" "11"
+network_login postgres old-customer | grep -q "authentication failed" && ok "the old password no longer works" || bad "the old password no longer works"
+out=$(roles_job "-e AUTH_DB_PASSWORD= -e REST_DB_PASSWORD= -e CUSTOMER_DB_PASSWORD=")
+expect_ok "empty passwords are skipped, not an error" "$out"
+expect_eq "and change nothing" "$(network_login postgres new-customer-0123456789)" "1"
+
 # --- result ----------------------------------------------------------------------------
 echo
 echo "passed: $pass, failed: $fail"

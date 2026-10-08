@@ -48,4 +48,7 @@ RUN set -eux; \
       >> /usr/share/postgresql/postgresql.conf.sample; \
     pgbackrest version; age --version; rclone version
 
+# The program of KoedoDB's Job that sets the passwords of a database's roles after its first start (doc/POSTGRESQL.md of KoedoDB). It is part of the image so that what the Job does is what this file says.
+COPY --chmod=0755 koedodb-reconcile-roles /usr/local/bin/koedodb-reconcile-roles
+
 LABEL org.opencontainers.image.version="${IMAGE_VERSION}"
