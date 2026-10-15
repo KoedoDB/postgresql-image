@@ -43,7 +43,7 @@ expect_eq() {
 # --- build and start -------------------------------------------------------------------
 if [ -z "${SKIP_BUILD:-}" ]; then
   echo "== build"
-  docker build -q --build-arg CRON_DATABASE="$DB" -t "$IMAGE" . >/dev/null || { echo "build failed"; exit 1; }
+  docker build -q --build-arg CRON_DATABASE="$DB" --build-arg NET_DATABASE="$DB" -t "$IMAGE" . >/dev/null || { echo "build failed"; exit 1; }
 fi
 
 echo "== start"
@@ -88,31 +88,35 @@ expect_err "non-superuser cannot create an untrusted extension" "$out" "permissi
 
 # --- 3. pg_cron ------------------------------------------------------------------------
 echo "== pg_cron"
-expect_eq "pg_cron is preloaded" "$(admin_sql "$DB" 'show shared_preload_libraries')" "pg_cron"
+expect_eq "pg_cron and pg_net are preloaded" "$(admin_sql "$DB" 'show shared_preload_libraries')" "pg_cron,pg_net"
 expect_eq "pg_cron database is $DB" "$(admin_sql "$DB" 'show cron.database_name')" "$DB"
 
+# pg_cron is trusted (2026-10-15): the database's owner creates it from its own migration. The script runs as the bootstrap superuser, so the schema and the tables belong to it; the owner can use them
+# only through default privileges from the superuser, which KoedoDB's init script sets (dbinit.go: schemas USAGE, tables and sequences ALL, for objects the superuser makes in this database).
 out=$(app_sql "$DB" "create extension pg_cron")
-expect_err "non-superuser cannot create pg_cron (not trusted)" "$out" "permission denied"
-# A superuser creates it: objects of an extension created by a non-superuser end up owned by
-# the bootstrap superuser anyway, and the job table is then not usable by that role.
-out=$(admin_sql "$DB" "create extension if not exists pg_cron")
-expect_ok "superuser can create pg_cron" "$out"
+expect_ok "the owner can create pg_cron (trusted)" "$out"
 out=$(app_sql "$DB" "select cron.schedule('nogrant', '* * * * *', 'select 1')")
-expect_err "no access to the cron schema without a grant" "$out" "permission denied for schema cron"
+expect_err "without the default privileges the owner cannot use cron" "$out" "permission denied for schema cron"
+out=$(app_sql "$DB" "drop extension pg_cron cascade")
+expect_ok "drop pg_cron to try again" "$out"
+admin_sql "$DB" "alter default privileges for role $ADMIN grant usage on schemas to app; alter default privileges for role $ADMIN grant all on tables to app; alter default privileges for role $ADMIN grant all on sequences to app" >/dev/null
+out=$(app_sql "$DB" "create extension pg_cron")
+expect_ok "the owner creates pg_cron again, with the default privileges" "$out"
 
-admin_sql "$DB" "grant usage on schema cron to app" >/dev/null
 out=$(app_sql "$DB" "select cron.schedule('ok-job', '* * * * *', 'select 1')")
 expect_ok "app can schedule a job after the grant" "$out"
 out=$(app_sql "$DB" "select cron.schedule('evil-job', '* * * * *', 'create role evil superuser')")
 expect_ok "app can schedule a job that tries to create a superuser" "$out"
 expect_eq "jobs are owned by app" "$(app_sql "$DB" "select string_agg(distinct username, ',') from cron.job")" "app"
 
+out=$(app_sql "$DB" "insert into cron.job (schedule, command, nodename, nodeport, database, username) values ('* * * * *', 'create role evil3 superuser', 'localhost', 5432, '$DB', '$ADMIN')")
+expect_err "cannot insert a job that runs as the superuser" "$out" "row-level security"
 out=$(app_sql "$DB" "select cron.schedule_in_database('x', '* * * * *', 'select 1', 'postgres')")
 expect_err "schedule_in_database is not allowed" "$out" "permission denied for function"
 out=$(app_sql "$DB" "update cron.job set username = '$ADMIN'")
-expect_err "cannot rewrite the job owner" "$out" "permission denied for table job"
+expect_err "cannot rewrite the job owner (row level security)" "$out" "row-level security"
 out=$(docker exec "$NAME" psql -U other -d "$DB" -qAt -c "select * from cron.job" 2>&1)
-expect_err "a role without the grant cannot use cron" "$out" "permission denied for schema cron"
+expect_err "another role cannot use cron (no USAGE on the schema)" "$out" "permission denied for schema cron"
 
 echo "   (waiting up to ${CRON_WAIT}s for the jobs to run)"
 for _ in $(seq 1 "$CRON_WAIT"); do
@@ -125,6 +129,41 @@ expect_eq "a plain job succeeds" \
 expect_eq "a job cannot exceed the privileges of its owner" \
   "$(app_sql "$DB" "select d.status from cron.job_run_details d join cron.job j using (jobid) where j.jobname = 'evil-job' limit 1")" "failed"
 expect_eq "no superuser was created by a job" "$(admin_sql "$DB" "select count(*) from pg_roles where rolname = 'evil'")" "0"
+
+# --- 3b. pg_net ------------------------------------------------------------------------
+echo "== pg_net"
+expect_eq "pg_net database is $DB" "$(admin_sql "$DB" 'show pg_net.database_name')" "$DB"
+out=$(app_sql "$DB" "create extension pg_net")
+expect_ok "the owner can create pg_net (trusted)" "$out"
+# pg_net's script grants the net schema, its tables and its sequences to PUBLIC, so every role of the database can queue requests and read and change the others' queue and responses.
+# That is the customer's own roles, in the customer's own database; the Pod's network policy decides where a request may go. A customer who wants it closed does what is in the README.
+out=$(docker exec "$NAME" psql -U other -d "$DB" -qAt -c "select net.http_get('http://127.0.0.1:8089/hello')" 2>&1)
+expect_ok "another role can queue a request (pg_net grants PUBLIC)" "$out"
+out=$(admin_sql "$DB" "revoke all on schema net from public; revoke all on all tables in schema net from public; revoke all on all sequences in schema net from public; revoke execute on all functions in schema net from public")
+expect_ok "take pg_net's grants to PUBLIC away" "$out"
+out=$(docker exec "$NAME" psql -U other -d "$DB" -qAt -c "select net.http_get('http://127.0.0.1:8089/hello')" 2>&1)
+expect_err "after the revoke another role cannot queue a request" "$out" "permission denied for schema net"
+admin_sql "$DB" "grant usage on schema net to app; grant all on all tables in schema net to app; grant all on all sequences in schema net to app; grant execute on all functions in schema net to app" >/dev/null
+
+# A tiny HTTP server inside the container, so the test needs no network for the plain request.
+in_box "perl -MIO::Socket::INET -e '\$s=IO::Socket::INET->new(Listen=>5,LocalAddr=>q(127.0.0.1),LocalPort=>8089,ReuseAddr=>1) or die; while(\$c=\$s->accept){ sysread(\$c,\$b,4096); print \$c qq(HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello); close \$c }' >/dev/null 2>&1 &" >/dev/null
+sleep 1
+req=$(app_sql "$DB" "select net.http_get('http://127.0.0.1:8089/hello')")
+expect_ok "app can queue a request after the grant" "$req"
+for _ in $(seq 1 20); do
+  st=$(admin_sql "$DB" "select status_code from net._http_response where id = ${req:-0}")
+  [ -n "$st" ] && break
+  sleep 1
+done
+expect_eq "the worker sent the plain HTTP request" "${st:-none}" "200"
+# HTTPS needs the network (as the downloads in the build): TLS is checked against the system's CA certificates.
+req=$(app_sql "$DB" "select net.http_get('https://github.com/')")
+for _ in $(seq 1 30); do
+  st=$(admin_sql "$DB" "select status_code from net._http_response where id = ${req:-0}")
+  [ -n "$st" ] && break
+  sleep 1
+done
+expect_eq "the worker sent an HTTPS request (TLS verified)" "${st:-none}" "200"
 
 # --- 4. pgvector -----------------------------------------------------------------------
 echo "== pgvector"

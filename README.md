@@ -16,26 +16,47 @@ The Debian `rclone` package is too old, so the official binary is used instead.
 
 ## Extensions
 
-`pgvector`, `pgtap`, `plpgsql_check`, `hypopg`, `rum`, `pg_partman`, `pg_repack`, `postgis` and `pg_cron`, installed from the PGDG packages. The standard contrib extensions (`pgcrypto`, `uuid-ossp`, `pg_trgm`, ...) are available as well.
+`pgvector`, `pgtap`, `plpgsql_check`, `hypopg`, `rum`, `pg_partman`, `pg_repack`, `postgis` and `pg_cron`, installed from the PGDG packages, and `pg_net`, built from source (below). The standard contrib extensions (`pgcrypto`, `uuid-ossp`, `pg_trgm`, ...) are available as well.
 
-All of them except `pg_cron` are marked `trusted = true` in their `.control` files, so a non-superuser who owns the database can run `CREATE EXTENSION`. Upstream does not mark them as trusted. The build only appends that one line to the packaged `.control` file and does not modify any code. Because this lets non-superusers install C extensions, extensions are added one at a time, after checking that a non-superuser can create them.
+All of them, `pg_cron` and `pg_net` included (since 2026-10-15), are marked `trusted = true` in their `.control` files, so a non-superuser who owns the database can run `CREATE EXTENSION`. Upstream does not mark them as trusted. The build only appends that one line to the packaged `.control` file and does not modify any code. Because this lets non-superusers install C extensions, extensions are added one at a time, after checking that a non-superuser can create them.
 
 ### pg_cron
 
 `pg_cron` is preloaded (`shared_preload_libraries`) and runs jobs with background workers (`cron.use_background_workers = on`). It runs jobs only in one database, set with the `CRON_DATABASE` build argument (default `postgres`).
 
-It is not trusted. A superuser creates the extension and grants access to the roles that need it:
+It is trusted (since 2026-10-15): the owner of the database can `CREATE EXTENSION pg_cron` from its own migration. A trusted extension's script runs as the bootstrap superuser, so the `cron` schema and its tables belong to the superuser, and the owner can use them only if the superuser has set **default privileges** for what it makes in this database (without them: `permission denied for schema cron`). KoedoDB's init script sets them:
 
 ```sql
-CREATE EXTENSION pg_cron;
-GRANT USAGE ON SCHEMA cron TO app;
+ALTER DEFAULT PRIVILEGES FOR ROLE <the superuser> GRANT USAGE ON SCHEMAS TO <the owner>;
+ALTER DEFAULT PRIVILEGES FOR ROLE <the superuser> GRANT ALL ON TABLES TO <the owner>;
+ALTER DEFAULT PRIVILEGES FOR ROLE <the superuser> GRANT ALL ON SEQUENCES TO <the owner>;
 ```
 
-With only this grant, `app` can schedule and see its own jobs, and jobs run with the privileges of the role that scheduled them.
+With these, the owner schedules and sees its own jobs, and jobs run with the privileges of the role that scheduled them. Checked (tests/run.sh): the owner cannot change `cron.job.username` or insert a job of the superuser (row level security), cannot use `schedule_in_database`, and a job that creates a superuser fails. Another role has no `USAGE` on the `cron` schema and cannot use cron; the owner cannot grant it (it does not own the schema).
 
 ### PostGIS
 
 Only `postgis` is marked trusted. The other PostGIS extensions (`postgis_topology`, `postgis_raster`, ...) need a superuser. `spatial_ref_sys` is owned by the extension, so a non-superuser cannot restore its data: dump with `--exclude-table-data=<schema>.spatial_ref_sys`.
+
+### pg_net
+
+[`pg_net`](https://github.com/supabase/pg_net) (Apache-2.0) sends HTTP and HTTPS requests from SQL (`net.http_get`, `net.http_post`, `net.http_delete`), from a background worker, with libcurl; the answers are rows in `net._http_response`. PGDG has no package for it, so the image builds it from a release tarball whose SHA-256 is checked (`PG_NET_VERSION`, `PG_NET_SHA256` in the `Dockerfile`; the Makefile of v0.20.5 still reports extension version 0.20.4). It is preloaded, and its worker works in one database, set with the `NET_DATABASE` build argument (`pg_net.database_name`; the same idea as `CRON_DATABASE`).
+
+It is trusted: the owner of the database runs `CREATE EXTENSION pg_net`. **Its script grants the schema, all its tables and all its sequences to `PUBLIC`**, so every role of the database could queue requests and read and change the others' queue and responses. These are the customer's own roles in the customer's own database. A superuser (or a customer with several login roles who wants it closed) takes that away right after `CREATE EXTENSION`, and grants only the roles that should send requests:
+
+```sql
+revoke all on schema net from public;
+revoke all on all tables in schema net from public;
+revoke all on all sequences in schema net from public;
+revoke execute on all functions in schema net from public;
+-- for a role that may send requests:
+grant usage on schema net to app;
+grant all on all tables in schema net to app;
+grant all on all sequences in schema net to app;
+grant execute on all functions in schema net to app;
+```
+
+The requests leave the Pod of the database: a role that can send them can reach whatever the Pod's network can. Keep the egress of the database's Pod to the addresses that should be reachable.
 
 ## Build
 
