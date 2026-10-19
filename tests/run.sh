@@ -82,13 +82,13 @@ for ext in vector pgtap plpgsql_check hypopg rum pg_partman pg_repack; do
   expect_ok "non-superuser can create $ext" "$out"
 done
 
-# An untrusted extension must still be refused (pg_stat_statements is not trusted).
-out=$(app_sql "$DB" "create extension pg_stat_statements")
+# An untrusted extension must still be refused (pageinspect is not trusted; pg_stat_statements is, since 2026-10-19: the customer reads its own slow queries from it).
+out=$(app_sql "$DB" "create extension pageinspect")
 expect_err "non-superuser cannot create an untrusted extension" "$out" "permission denied"
 
 # --- 3. pg_cron ------------------------------------------------------------------------
 echo "== pg_cron"
-expect_eq "pg_cron and pg_net are preloaded" "$(admin_sql "$DB" 'show shared_preload_libraries')" "pg_cron,pg_net"
+expect_eq "pg_cron, pg_net, pg_stat_statements and auto_explain are preloaded" "$(admin_sql "$DB" 'show shared_preload_libraries')" "pg_cron,pg_net,pg_stat_statements,auto_explain"
 expect_eq "pg_cron database is $DB" "$(admin_sql "$DB" 'show cron.database_name')" "$DB"
 
 # pg_cron is trusted (2026-10-15): the database's owner creates it from its own migration. The script runs as the bootstrap superuser, so the schema and the tables belong to it; the owner can use them
@@ -129,6 +129,31 @@ expect_eq "a plain job succeeds" \
 expect_eq "a job cannot exceed the privileges of its owner" \
   "$(app_sql "$DB" "select d.status from cron.job_run_details d join cron.job j using (jobid) where j.jobname = 'evil-job' limit 1")" "failed"
 expect_eq "no superuser was created by a job" "$(admin_sql "$DB" "select count(*) from pg_roles where rolname = 'evil'")" "0"
+
+# --- 3a. slow queries: pg_stat_statements, log_min_duration_statement, auto_explain ---------------
+# The owner of a database is not a superuser. It creates pg_stat_statements itself (trusted), and sets log_min_duration_statement and auto_explain.* only when it has been granted
+# SET on those parameters, which KoedoDB's initialisation of a Project does (control-plane/internal/regionalagent/dbinit.go): here the grant is made by hand, as the superuser.
+echo "== slow queries"
+out=$(app_sql "$DB" "create extension pg_stat_statements")
+expect_ok "the owner can create pg_stat_statements (trusted)" "$out"
+out=$(app_sql "$DB" "alter database $DB set log_min_duration_statement = '1ms'")
+expect_err "without a grant the owner cannot set log_min_duration_statement" "$out" "permission denied to set parameter"
+out=$(admin_sql "$DB" 'grant set on parameter log_min_duration_statement, "auto_explain.log_min_duration", "auto_explain.log_analyze" to app')
+expect_ok "the superuser grants SET on the parameters" "$out"
+out=$(app_sql "$DB" "alter database $DB set log_min_duration_statement = '1ms'")
+expect_ok "with the grant the owner sets log_min_duration_statement for its database" "$out"
+out=$(app_sql "$DB" "alter database $DB set auto_explain.log_min_duration = '1ms'")
+expect_ok "...and auto_explain.log_min_duration" "$out"
+out=$(app_sql "$DB" "alter database $DB set auto_explain.log_analyze = on")
+expect_ok "...and auto_explain.log_analyze" "$out"
+out=$(app_sql "$DB" "alter database $DB set log_statement = 'all'")
+expect_err "a parameter that was not granted stays out of reach (log_statement)" "$out" "permission denied to set parameter"
+app_sql "$DB" "select count(*) from generate_series(1, 1500000)" >/dev/null
+sleep 1
+logs=$(docker logs "$NAME" 2>&1)
+if echo "$logs" | grep -q 'duration: .* statement: select count(\*) from generate_series(1, 1500000)'; then ok "the slow statement is in the server log (the Console shows it as source postgres)"; else bad "the slow statement is not in the log"; fi
+if echo "$logs" | grep -q 'Query Text: select count(\*) from generate_series(1, 1500000)'; then ok "auto_explain wrote the plan into the log"; else bad "auto_explain wrote no plan"; fi
+expect_eq "pg_stat_statements counts the statement, normalised" "$(app_sql "$DB" "select calls from pg_stat_statements where query like 'select count(*) from generate_series(\$1, \$2)%' limit 1")" "1"
 
 # --- 3b. pg_net ------------------------------------------------------------------------
 echo "== pg_net"

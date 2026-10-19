@@ -15,17 +15,17 @@ RUN set -eux; \
 # Pinned by digest for reproducible builds. Update the tag and digest together.
 FROM postgres:18.6-trixie@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
 
-ARG RC_VERSION=1.75.1
-ARG RC_SHA256_AMD64=982b5aa772841168f8e380f139e9e787b2a105403e32b94da8676a0e1c0a13ab
-ARG RC_SHA256_ARM64=03f2504174034b6d004152ed7369251c9a9ec1f7e0836eda420f5c7a5ec0dff9
+ARG RC_VERSION=1.75.2
+ARG RC_SHA256_AMD64=349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702
+ARG RC_SHA256_ARM64=7e1e8d69654941b7b7df84ee74c5f7fb09cce7d5496947fb7bf16b55ff427d10
 # Version of this image: <PostgreSQL version>.<revision>. Bump the revision when only this Dockerfile changes.
-ARG IMAGE_VERSION=18.6.1
+ARG IMAGE_VERSION=18.6.2
 ARG TARGETARCH
 # pg_cron runs jobs only in this database. Override with --build-arg CRON_DATABASE=<name>.
 ARG CRON_DATABASE=postgres
 # pg_net sends its requests from a background worker that works in one database too. Override with --build-arg NET_DATABASE=<name>.
 ARG NET_DATABASE=postgres
-ARG TRUSTED_EXTENSIONS="vector pgtap plpgsql_check hypopg rum pg_partman pg_repack postgis pg_cron pg_net"
+ARG TRUSTED_EXTENSIONS="vector pgtap plpgsql_check hypopg rum pg_partman pg_repack postgis pg_cron pg_net pg_stat_statements"
 
 # pg_net: the files built above.
 COPY --from=pg_net_build /out/ /
@@ -62,7 +62,7 @@ RUN set -eux; \
       grep -q '^trusted' "$f" || echo 'trusted = true' >> "$f"; \
     done; \
     printf '%s\n' \
-      "shared_preload_libraries = 'pg_cron,pg_net'" \
+      "shared_preload_libraries = 'pg_cron,pg_net,pg_stat_statements,auto_explain'" \
       "cron.database_name = '${CRON_DATABASE}'" \
       "cron.use_background_workers = on" \
       "pg_net.database_name = '${NET_DATABASE}'" \
