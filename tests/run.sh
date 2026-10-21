@@ -245,15 +245,22 @@ in_box "age-keygen -o /tmp/key.txt 2>/tmp/pub.txt; mkdir -p /tmp/remote" >/dev/n
 pub=$(in_box "sed -n 's/^Public key: //p' /tmp/pub.txt")
 [ -n "$pub" ] && ok "age key pair generated" || bad "age key pair generated"
 
-out=$(in_box "pg_dump -U app -d $APPDB -Fc --no-owner --exclude-table-data=extensions.spatial_ref_sys | age -r '$pub' | rclone rcat :local:/tmp/remote/dump.age")
-expect_ok "pg_dump | age | rclone rcat" "$out"
+# The operator's logical backup (KoedoDB's DumpScript): pg_dumpall as the superuser | zstd | age | rclone rcat. It holds every database and the roles.
+out=$(in_box "pg_dumpall -U $ADMIN | zstd -q -3 | age -r '$pub' | rclone rcat :local:/tmp/remote/dump.sql.zst.age")
+expect_ok "pg_dumpall | zstd | age | rclone rcat" "$out"
 expect_eq "the remote file exists and is not plain text" \
-  "$(in_box "rclone cat :local:/tmp/remote/dump.age 2>/dev/null | head -c 21")" "age-encryption.org/v1"
+  "$(in_box "rclone cat :local:/tmp/remote/dump.sql.zst.age 2>/dev/null | head -c 21")" "age-encryption.org/v1"
 
-admin_sql postgres "create database fromage owner app" >/dev/null
-out=$(in_box "rclone cat :local:/tmp/remote/dump.age | age -d -i /tmp/key.txt | pg_restore -U app -d fromage --no-owner")
-expect_ok "rclone cat | age -d | pg_restore" "$out"
-expect_eq "decrypted restore has the same rows" "$(app_sql fromage "select count(*) from items")" "$count_src"
+# Restore into a new cluster (made inside the container, on its own port and socket directory), as the superuser: koedodb-style, nothing is dropped first. Errors about what a new cluster already has (the
+# admin role and its database, an extension that needs preloading) are expected and do not stop it; the data must be there.
+in_box "rm -rf /tmp/restore /tmp/rsock; mkdir -p /tmp/rsock; chown postgres /tmp/rsock; gosu postgres initdb -D /tmp/restore -U $ADMIN --auth=trust >/dev/null && gosu postgres pg_ctl -D /tmp/restore -o '-p 5433 -c unix_socket_directories=/tmp/rsock -c listen_addresses=' -w -l /tmp/restore.log start >/dev/null" >/dev/null
+out=$(in_box "rclone cat :local:/tmp/remote/dump.sql.zst.age | age -d -i /tmp/key.txt | zstd -d -q | psql -h /tmp/rsock -p 5433 -U $ADMIN -d postgres -q -f - >/tmp/restore.out 2>&1; test -s /tmp/restore.out; echo done")
+expect_ok "rclone cat | age -d | zstd -d | psql restores into a new cluster" "$out"
+rpsql() { docker exec "$NAME" psql -h /tmp/rsock -p 5433 -U "$ADMIN" -d "$1" -qAt -c "$2" 2>&1; }
+expect_eq "the restored cluster has the same rows in the customer's database" "$(rpsql "$APPDB" "select count(*) from items")" "$count_src"
+expect_eq "the roles came with it (the unprivileged owner)" "$(rpsql postgres "select count(*) from pg_roles where rolname = 'app' and not rolsuper")" "1"
+expect_eq "a database the customer made is in it" "$(rpsql postgres "select count(*) from pg_database where datname = 'restored'")" "1"
+in_box "gosu postgres pg_ctl -D /tmp/restore -m fast stop >/dev/null; rm -rf /tmp/restore /tmp/rsock" >/dev/null
 
 # --- 7. koedodb-reconcile-roles ----------------------------------------------------------
 # The program of KoedoDB's Job that sets the passwords of a database's roles after its first start. The loopback and the socket are trusted by this image, so a password is only checked from

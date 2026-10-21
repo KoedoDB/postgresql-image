@@ -30,7 +30,7 @@ ARG TRUSTED_EXTENSIONS="vector pgtap plpgsql_check hypopg rum pg_partman pg_repa
 # pg_net: the files built above.
 COPY --from=pg_net_build /out/ /
 
-# pgbackrest: from PGDG (already configured in the official image). age: from Debian.
+# pgbackrest: from PGDG (already configured in the official image). age and zstd: from Debian (zstd compresses the operator's pg_dumpall before it is encrypted).
 # Extensions: install only verified ones and add trusted = true to their .control files.
 # Upstream does not mark these as trusted. We only append one metadata line to the packaged .control; no code is modified.
 # This lets non-superusers install C extensions, which widens the attack surface, so add them one at a time after verifying.
@@ -40,7 +40,7 @@ COPY --from=pg_net_build /out/ /
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl unzip \
-      pgbackrest age \
+      pgbackrest age zstd \
       postgresql-18-pgvector postgresql-18-pgtap postgresql-18-plpgsql-check \
       postgresql-18-hypopg postgresql-18-rum postgresql-18-partman postgresql-18-repack \
       postgresql-18-cron postgresql-18-postgis-3 libcurl4t64; \
@@ -67,7 +67,7 @@ RUN set -eux; \
       "cron.use_background_workers = on" \
       "pg_net.database_name = '${NET_DATABASE}'" \
       >> /usr/share/postgresql/postgresql.conf.sample; \
-    pgbackrest version; age --version; rclone version
+    pgbackrest version; age --version; zstd --version; rclone version
 
 # The program of KoedoDB's Job that sets the passwords of a database's roles after its first start (doc/POSTGRESQL.md of KoedoDB). It is part of the image so that what the Job does is what this file says.
 COPY --chmod=0755 koedodb-reconcile-roles /usr/local/bin/koedodb-reconcile-roles
