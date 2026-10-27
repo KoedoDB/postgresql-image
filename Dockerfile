@@ -1,6 +1,6 @@
 # pg_net (Supabase, Apache-2.0) is built from source here, from a release tarball checked against its SHA-256: the PGDG packages do not have it. Only its .so and extension files go on to the image below.
 # Update the base image of both stages together; update PG_NET_VERSION and PG_NET_SHA256 together (curl -sSL https://github.com/supabase/pg_net/archive/refs/tags/v<version>.tar.gz | sha256sum).
-FROM postgres:18.6-trixie@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722 AS pg_net_build
+FROM postgres:18.6-trixie@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6 AS pg_net_build
 ARG PG_NET_VERSION=0.20.5
 ARG PG_NET_SHA256=a0a2611ea6fbbc93ef553ff057d97d3a857136742cb50605058744bf57fe6c27
 RUN set -eux; \
@@ -13,13 +13,13 @@ RUN set -eux; \
     make -C /tmp/pg_net with_llvm=no install DESTDIR=/out
 
 # Pinned by digest for reproducible builds. Update the tag and digest together.
-FROM postgres:18.6-trixie@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
+FROM postgres:18.6-trixie@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
 
 ARG RC_VERSION=1.75.2
 ARG RC_SHA256_AMD64=349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702
 ARG RC_SHA256_ARM64=7e1e8d69654941b7b7df84ee74c5f7fb09cce7d5496947fb7bf16b55ff427d10
 # Version of this image: <PostgreSQL version>.<revision>. Bump the revision when only this Dockerfile changes.
-ARG IMAGE_VERSION=18.6.2
+ARG IMAGE_VERSION=18.6.3
 ARG TARGETARCH
 # pg_cron runs jobs only in this database. Override with --build-arg CRON_DATABASE=<name>.
 ARG CRON_DATABASE=postgres
