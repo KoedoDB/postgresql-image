@@ -19,7 +19,7 @@ ARG RC_VERSION=1.75.2
 ARG RC_SHA256_AMD64=349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702
 ARG RC_SHA256_ARM64=7e1e8d69654941b7b7df84ee74c5f7fb09cce7d5496947fb7bf16b55ff427d10
 # Version of this image: <PostgreSQL version>.<revision>. Bump the revision when only this Dockerfile changes.
-ARG IMAGE_VERSION=18.6.3
+ARG IMAGE_VERSION=18.6.4
 ARG TARGETARCH
 # pg_cron runs jobs only in this database. Override with --build-arg CRON_DATABASE=<name>.
 ARG CRON_DATABASE=postgres
@@ -31,6 +31,7 @@ ARG TRUSTED_EXTENSIONS="vector pgtap plpgsql_check hypopg rum pg_partman pg_repa
 COPY --from=pg_net_build /out/ /
 
 # pgbackrest: from PGDG (already configured in the official image). age and zstd: from Debian (zstd compresses the operator's pg_dumpall before it is encrypted).
+# wal2json (Realtime's postgres_changes reads the WAL through it; the server also has to allow it in output_plugin_libraries, which the Regional Agent sets).
 # Extensions: install only verified ones and add trusted = true to their .control files.
 # Upstream does not mark these as trusted. We only append one metadata line to the packaged .control; no code is modified.
 # This lets non-superusers install C extensions, which widens the attack surface, so add them one at a time after verifying.
@@ -43,7 +44,7 @@ RUN set -eux; \
       pgbackrest age zstd \
       postgresql-18-pgvector postgresql-18-pgtap postgresql-18-plpgsql-check \
       postgresql-18-hypopg postgresql-18-rum postgresql-18-partman postgresql-18-repack \
-      postgresql-18-cron postgresql-18-postgis-3 libcurl4t64; \
+      postgresql-18-cron postgresql-18-postgis-3 postgresql-18-wal2json libcurl4t64; \
     case "${TARGETARCH:-amd64}" in \
       amd64) sha="${RC_SHA256_AMD64}" ;; \
       arm64) sha="${RC_SHA256_ARM64}" ;; \
