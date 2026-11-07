@@ -11,7 +11,8 @@
 # (--delta), because it has no PG_VERSION.
 set -Eeo pipefail
 
-pgdata="${PGDATA:-/var/lib/postgresql/18/docker}"
+# The official image sets PGDATA for its major version; there is no default here, so that an image of another major can never restore into the wrong directory.
+pgdata="${PGDATA:?koedodb-entrypoint: PGDATA is not set}"
 
 if [ -n "${KOEDODB_RESTORE:-}" ] && [ ! -s "$pgdata/PG_VERSION" ]; then
   opts=("--stanza=${PGBACKREST_STANZA:-main}" "--pg1-path=$pgdata" --delta)
