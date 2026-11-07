@@ -26,7 +26,7 @@ ARG RC_VERSION=1.75.2
 ARG RC_SHA256_AMD64=349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702
 ARG RC_SHA256_ARM64=7e1e8d69654941b7b7df84ee74c5f7fb09cce7d5496947fb7bf16b55ff427d10
 # Version of this image: <PostgreSQL version>.<revision>. Bump the revision when only this Dockerfile changes.
-ARG IMAGE_VERSION=18.6.5
+ARG IMAGE_VERSION=18.6.6
 ARG TARGETARCH
 # pg_cron runs jobs only in this database. Override with --build-arg CRON_DATABASE=<name>.
 ARG CRON_DATABASE=postgres
