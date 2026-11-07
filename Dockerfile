@@ -72,5 +72,10 @@ RUN set -eux; \
 
 # The program of KoedoDB's Job that sets the passwords of a database's roles after its first start (doc/POSTGRESQL.md of KoedoDB). It is part of the image so that what the Job does is what this file says.
 COPY --chmod=0755 koedodb-reconcile-roles /usr/local/bin/koedodb-reconcile-roles
+# The entrypoint: the official one, and a restore from the pgBackRest repository first when KOEDODB_RESTORE is set and the data directory is new (recovery of a Host's Projects).
+COPY --chmod=0755 koedodb-entrypoint /usr/local/bin/koedodb-entrypoint
+ENTRYPOINT ["koedodb-entrypoint"]
+# Setting ENTRYPOINT clears the CMD of the base image: put it back.
+CMD ["postgres"]
 
 LABEL org.opencontainers.image.version="${IMAGE_VERSION}"

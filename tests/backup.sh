@@ -72,6 +72,21 @@ sql "create table made_after_target (x int)" >/dev/null
 expect_eq "the accident happened (0 rows)" "$(sql 'select count(*) from t')" "0"
 out=$(pgb check); rc=$?; expect_ok "WAL after the accident is archived" $rc; [ $rc -ne 0 ] && echo "$out"
 
+echo "== the entrypoint restores a new data volume to the point in time (a copy of the repository: the copy is not archived into)"
+REPO2_VOL="pgbackup-repo2-$ID"; TIME_VOL="pgbackup-time-$ID"; TIME_NAME="pgbackup-time-$ID"
+docker run --rm -u root --entrypoint sh -v "$REPO_VOL:/src:ro" -v "$REPO2_VOL:/dst" "$IMAGE" -c 'cp -a /src/. /dst/ && chown -R postgres:postgres /dst' >/dev/null
+docker run -d --name "$TIME_NAME" -e POSTGRES_PASSWORD=throwaway "${ENVS[@]}" -e KOEDODB_RESTORE=time -e "KOEDODB_RESTORE_TARGET=$TARGET" \
+  -v "$TIME_VOL:/var/lib/postgresql" -v "$REPO2_VOL:/var/lib/pgbackrest" "$IMAGE" -c wal_level=replica >/dev/null
+for _ in $(seq 1 90); do
+  [ "$(docker exec "$TIME_NAME" psql -U postgres -qAt -c 'select pg_is_in_recovery()' 2>/dev/null)" = "f" ] && break
+  sleep 1
+done
+tsql() { docker exec "$TIME_NAME" psql -U postgres -qAt -v ON_ERROR_STOP=1 -c "$1" 2>&1; }
+[ "$(docker inspect -f '{{.State.Running}}' "$TIME_NAME")" = true ] || docker logs "$TIME_NAME" 2>&1 | tail -12
+expect_eq "KOEDODB_RESTORE=time: the rows up to the target are there" "$(tsql 'select count(*) from t')" "200"
+expect_eq "KOEDODB_RESTORE=time: nothing made after the target" "$(tsql "select count(*) from pg_tables where tablename = 'made_after_target'")" "0"
+docker rm -f "$TIME_NAME" >/dev/null; docker volume rm "$TIME_VOL" "$REPO2_VOL" >/dev/null 2>&1
+
 echo "== restore to the point in time"
 docker stop "$NAME" >/dev/null
 docker rm "$NAME" >/dev/null
@@ -88,6 +103,28 @@ expect_eq "server is promoted" "$(sql 'select pg_is_in_recovery()')" "f"
 expect_eq "rows from before the target are back" "$(sql 'select count(*) from t')" "200"
 expect_eq "rows after the backup but before the target are present" "$(sql "select count(*) from t where note = 'after-backup'")" "100"
 expect_eq "changes after the target are gone" "$(sql "select count(*) from pg_tables where tablename = 'made_after_target'")" "0"
+
+# --- the image's entrypoint restores a new volume by itself (KOEDODB_RESTORE; used to recover a Host's Projects) ---------------------------------------------
+echo "== the entrypoint restores a new data volume (latest)"
+docker stop "$NAME" >/dev/null; docker rm "$NAME" >/dev/null
+NEW_VOL="pgbackup-new-$ID"
+trap 'docker rm -f "$NAME" >/dev/null 2>&1; docker volume rm "$DATA_VOL" "$REPO_VOL" "$NEW_VOL" >/dev/null 2>&1' EXIT
+start_new() { # $@ = the KOEDODB_RESTORE variables
+  docker volume rm "$NEW_VOL" >/dev/null 2>&1
+  docker run -d --name "$NAME" -e POSTGRES_PASSWORD=throwaway "${ENVS[@]}" "$@" -v "$NEW_VOL:/var/lib/postgresql" -v "$REPO_VOL:/var/lib/pgbackrest" "$IMAGE" "${PGARGS[@]}" >/dev/null || return 1
+  for _ in $(seq 1 90); do
+    [ "$(docker exec "$NAME" psql -U postgres -qAt -c 'select pg_is_in_recovery()' 2>/dev/null)" = "f" ] && break
+    sleep 1
+  done
+}
+start_new -e KOEDODB_RESTORE=latest || { echo "start of the restored copy failed"; exit 1; }
+expect_eq "KOEDODB_RESTORE=latest: the new volume holds the restored database" "$(sql 'select count(*) from t')" "200"
+expect_eq "the restored server is out of recovery" "$(sql 'select pg_is_in_recovery()')" "f"
+docker restart "$NAME" >/dev/null
+for _ in $(seq 1 60); do docker exec "$NAME" pg_isready -U postgres >/dev/null 2>&1 && break; sleep 1; done
+expect_eq "a restart does not restore again (the data is still there)" "$(sql 'select count(*) from t')" "200"
+out=$(docker run --rm -e POSTGRES_PASSWORD=x -e KOEDODB_RESTORE=sometimes "${ENVS[@]}" "$IMAGE" 2>&1); rc=$?
+expect_eq "a wrong KOEDODB_RESTORE stops the container" "$rc" "64"
 
 echo
 echo "passed: $pass, failed: $fail"

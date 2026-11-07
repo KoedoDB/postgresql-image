@@ -1,0 +1,37 @@
+#!/bin/bash
+# The entrypoint of the image. Without KOEDODB_RESTORE it is the official one (docker-entrypoint.sh), unchanged.
+#
+# With KOEDODB_RESTORE set, and a data directory that is not a cluster (no PG_VERSION: the volume is new), it first restores the database from the pgBackRest repository, then starts
+# PostgreSQL, which replays the archived WAL and is promoted. The repository comes from the PGBACKREST_* variables (the ones the Regional Agent sets for archiving), so nothing else is needed:
+#
+#   KOEDODB_RESTORE=latest                          the latest backup, and all the archived WAL after it
+#   KOEDODB_RESTORE=time KOEDODB_RESTORE_TARGET=... the time (e.g. 2026-11-07 09:30:00.000000+00), then promote
+#
+# A data directory that already holds a cluster is never touched: a restart of the Pod does not restore again. A directory left half restored by a Pod that was stopped is restored again
+# (--delta), because it has no PG_VERSION.
+set -Eeo pipefail
+
+pgdata="${PGDATA:-/var/lib/postgresql/18/docker}"
+
+if [ -n "${KOEDODB_RESTORE:-}" ] && [ ! -s "$pgdata/PG_VERSION" ]; then
+  opts=("--stanza=${PGBACKREST_STANZA:-main}" "--pg1-path=$pgdata" --delta)
+  case "$KOEDODB_RESTORE" in
+    latest) ;;
+    time)
+      [ -n "${KOEDODB_RESTORE_TARGET:-}" ] || { echo "koedodb-entrypoint: KOEDODB_RESTORE=time needs KOEDODB_RESTORE_TARGET" >&2; exit 64; }
+      opts+=(--type=time "--target=$KOEDODB_RESTORE_TARGET" --target-action=promote)
+      ;;
+    *) echo "koedodb-entrypoint: KOEDODB_RESTORE must be latest or time, not '$KOEDODB_RESTORE'" >&2; exit 64 ;;
+  esac
+  echo "koedodb-entrypoint: restoring $KOEDODB_RESTORE into $pgdata" >&2
+  mkdir -p "$pgdata"
+  chmod 700 "$pgdata"
+  if [ "$(id -u)" = 0 ]; then
+    chown postgres:postgres "$pgdata"
+    gosu postgres pgbackrest "${opts[@]}" restore
+  else
+    pgbackrest "${opts[@]}" restore
+  fi
+fi
+
+exec docker-entrypoint.sh "$@"
