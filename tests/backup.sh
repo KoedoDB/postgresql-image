@@ -10,7 +10,7 @@ ID="$$"
 NAME="pgbackup-$ID"
 DATA_VOL="pgbackup-data-$ID"
 REPO_VOL="pgbackup-repo-$ID"
-PGDATA_DIR=/var/lib/postgresql/18/docker
+PGDATA_DIR=$(docker run --rm --entrypoint printenv "$IMAGE" PGDATA)  # the official image sets it for its major
 
 pass=0
 fail=0

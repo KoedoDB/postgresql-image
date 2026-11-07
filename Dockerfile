@@ -1,19 +1,26 @@
+# The PostgreSQL major version, and the base image of that major (the official image, pinned by digest: update the tag and the digest together, and both stages use it). A build of another
+# major is `--build-arg PG_MAJOR=19 --build-arg BASE_IMAGE=postgres:19.1-trixie@sha256:...`; the extension packages of that major have to exist (PGDG), and the others in the list are checked
+# by tests/run.sh. IMAGE_VERSION is `<PostgreSQL version>.<revision>` and is given with the build.
+ARG PG_MAJOR=18
+ARG BASE_IMAGE=postgres:18.6-trixie@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
 # pg_net (Supabase, Apache-2.0) is built from source here, from a release tarball checked against its SHA-256: the PGDG packages do not have it. Only its .so and extension files go on to the image below.
 # Update the base image of both stages together; update PG_NET_VERSION and PG_NET_SHA256 together (curl -sSL https://github.com/supabase/pg_net/archive/refs/tags/v<version>.tar.gz | sha256sum).
-FROM postgres:18.6-trixie@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6 AS pg_net_build
+FROM ${BASE_IMAGE} AS pg_net_build
+ARG PG_MAJOR
 ARG PG_NET_VERSION=0.20.5
 ARG PG_NET_SHA256=a0a2611ea6fbbc93ef553ff057d97d3a857136742cb50605058744bf57fe6c27
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates curl build-essential postgresql-server-dev-18 libcurl4-openssl-dev libicu-dev; \
+    apt-get install -y --no-install-recommends ca-certificates curl build-essential postgresql-server-dev-${PG_MAJOR} libcurl4-openssl-dev libicu-dev; \
     curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o /tmp/pg_net.tar.gz "https://github.com/supabase/pg_net/archive/refs/tags/v${PG_NET_VERSION}.tar.gz"; \
     echo "${PG_NET_SHA256}  /tmp/pg_net.tar.gz" | sha256sum -c -; \
     mkdir /tmp/pg_net; tar -xzf /tmp/pg_net.tar.gz -C /tmp/pg_net --strip-components=1; \
     make -C /tmp/pg_net with_llvm=no -j"$(nproc)"; \
     make -C /tmp/pg_net with_llvm=no install DESTDIR=/out
 
-# Pinned by digest for reproducible builds. Update the tag and digest together.
-FROM postgres:18.6-trixie@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
+# Pinned by digest for reproducible builds (BASE_IMAGE above).
+FROM ${BASE_IMAGE}
+ARG PG_MAJOR
 
 ARG RC_VERSION=1.75.2
 ARG RC_SHA256_AMD64=349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702
@@ -42,9 +49,9 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl unzip \
       pgbackrest age zstd \
-      postgresql-18-pgvector postgresql-18-pgtap postgresql-18-plpgsql-check \
-      postgresql-18-hypopg postgresql-18-rum postgresql-18-partman postgresql-18-repack \
-      postgresql-18-cron postgresql-18-postgis-3 postgresql-18-wal2json libcurl4t64; \
+      postgresql-${PG_MAJOR}-pgvector postgresql-${PG_MAJOR}-pgtap postgresql-${PG_MAJOR}-plpgsql-check \
+      postgresql-${PG_MAJOR}-hypopg postgresql-${PG_MAJOR}-rum postgresql-${PG_MAJOR}-partman postgresql-${PG_MAJOR}-repack \
+      postgresql-${PG_MAJOR}-cron postgresql-${PG_MAJOR}-postgis-3 postgresql-${PG_MAJOR}-wal2json libcurl4t64; \
     case "${TARGETARCH:-amd64}" in \
       amd64) sha="${RC_SHA256_AMD64}" ;; \
       arm64) sha="${RC_SHA256_ARM64}" ;; \
@@ -58,7 +65,7 @@ RUN set -eux; \
     apt-get purge -y --auto-remove curl unzip; \
     rm -rf /var/lib/apt/lists/*; \
     for ext in $TRUSTED_EXTENSIONS; do \
-      f="/usr/share/postgresql/18/extension/${ext}.control"; \
+      f="/usr/share/postgresql/${PG_MAJOR}/extension/${ext}.control"; \
       test -f "$f"; \
       grep -q '^trusted' "$f" || echo 'trusted = true' >> "$f"; \
     done; \

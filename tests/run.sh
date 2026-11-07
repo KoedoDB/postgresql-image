@@ -63,7 +63,8 @@ sleep 2
 
 # --- 1. versions and tools -------------------------------------------------------------
 echo "== tools"
-expect_eq "PostgreSQL is 18.6" "$(in_box 'postgres --version' | grep -o '18\.6' | head -1)" "18.6"
+want=$(docker image inspect "$IMAGE" -f '{{index .Config.Labels "org.opencontainers.image.version"}}' | cut -d. -f1-2)
+expect_eq "PostgreSQL is $want (the version in the image's label)" "$(in_box 'postgres --version' | grep -oE '[0-9]+\.[0-9]+' | head -1)" "$want"
 expect_ok "pgbackrest runs" "$(in_box 'pgbackrest version')"
 expect_ok "age runs" "$(in_box 'age --version')"
 expect_ok "age-keygen runs" "$(in_box 'age-keygen --version')"

@@ -1,6 +1,6 @@
 # PostgreSQL image
 
-The official `postgres` image (PostgreSQL 18.6 on Debian trixie) with a few tools and extensions added. Nothing in PostgreSQL itself is patched.
+The official `postgres` image (PostgreSQL 18.6 on Debian trixie; another major with `--build-arg PG_MAJOR` and `BASE_IMAGE`) with a few tools and extensions added. Nothing in PostgreSQL itself is patched.
 
 The base image is pinned by tag and digest. Update both together.
 
