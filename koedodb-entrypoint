@@ -7,7 +7,7 @@
 #   KOEDODB_RESTORE=latest                          the latest backup, and all the archived WAL after it
 #   KOEDODB_RESTORE=time KOEDODB_RESTORE_TARGET=... the time (e.g. 2026-11-07 09:30:00.000000+00), then promote
 #                        KOEDODB_RESTORE_TIMELINE=... (optional) the timeline to follow: current (the backup's), latest, or a number. Without it PostgreSQL's default (the newest) applies,
-#                        which cannot reach a time on a branch that an earlier restore left behind.
+#                        which cannot reach a time on a branch that an earlier restore left behind (the Regional Agent always sends one: current unless asked otherwise).
 #
 # A data directory that already holds a cluster is never touched: a restart of the Pod does not restore again. A directory left half restored by a Pod that was stopped is restored again
 # (--delta), because it has no PG_VERSION.
