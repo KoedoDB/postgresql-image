@@ -75,7 +75,7 @@ out=$(pgb check); rc=$?; expect_ok "WAL after the accident is archived" $rc; [ $
 echo "== the entrypoint restores a new data volume to the point in time (a copy of the repository: the copy is not archived into)"
 REPO2_VOL="pgbackup-repo2-$ID"; TIME_VOL="pgbackup-time-$ID"; TIME_NAME="pgbackup-time-$ID"
 docker run --rm -u root --entrypoint sh -v "$REPO_VOL:/src:ro" -v "$REPO2_VOL:/dst" "$IMAGE" -c 'cp -a /src/. /dst/ && chown -R postgres:postgres /dst' >/dev/null
-docker run -d --name "$TIME_NAME" -e POSTGRES_PASSWORD=throwaway "${ENVS[@]}" -e KOEDODB_RESTORE=time -e "KOEDODB_RESTORE_TARGET=$TARGET" \
+docker run -d --name "$TIME_NAME" -e POSTGRES_PASSWORD=throwaway "${ENVS[@]}" -e KOEDODB_RESTORE=time -e "KOEDODB_RESTORE_TARGET=$TARGET" -e KOEDODB_RESTORE_TIMELINE=current \
   -v "$TIME_VOL:/var/lib/postgresql" -v "$REPO2_VOL:/var/lib/pgbackrest" "$IMAGE" -c wal_level=replica >/dev/null
 for _ in $(seq 1 90); do
   [ "$(docker exec "$TIME_NAME" psql -U postgres -qAt -c 'select pg_is_in_recovery()' 2>/dev/null)" = "f" ] && break
@@ -84,6 +84,7 @@ done
 tsql() { docker exec "$TIME_NAME" psql -U postgres -qAt -v ON_ERROR_STOP=1 -c "$1" 2>&1; }
 [ "$(docker inspect -f '{{.State.Running}}' "$TIME_NAME")" = true ] || docker logs "$TIME_NAME" 2>&1 | tail -12
 expect_eq "KOEDODB_RESTORE=time: the rows up to the target are there" "$(tsql 'select count(*) from t')" "200"
+expect_eq "KOEDODB_RESTORE_TIMELINE=current reaches pgBackRest as --target-timeline" "$(docker exec "$TIME_NAME" sh -c 'grep -c "^recovery_target_timeline = .current." "$PGDATA/postgresql.auto.conf"')" "1"
 expect_eq "KOEDODB_RESTORE=time: nothing made after the target" "$(tsql "select count(*) from pg_tables where tablename = 'made_after_target'")" "0"
 docker rm -f "$TIME_NAME" >/dev/null; docker volume rm "$TIME_VOL" "$REPO2_VOL" >/dev/null 2>&1
 
@@ -125,6 +126,8 @@ for _ in $(seq 1 60); do docker exec "$NAME" pg_isready -U postgres >/dev/null 2
 expect_eq "a restart does not restore again (the data is still there)" "$(sql 'select count(*) from t')" "200"
 out=$(docker run --rm -e POSTGRES_PASSWORD=x -e KOEDODB_RESTORE=sometimes "${ENVS[@]}" "$IMAGE" 2>&1); rc=$?
 expect_eq "a wrong KOEDODB_RESTORE stops the container" "$rc" "64"
+out=$(docker run --rm -e POSTGRES_PASSWORD=x -e KOEDODB_RESTORE=time -e "KOEDODB_RESTORE_TARGET=$TARGET" -e 'KOEDODB_RESTORE_TIMELINE=1; id' "${ENVS[@]}" "$IMAGE" 2>&1); rc=$?
+expect_eq "a wrong KOEDODB_RESTORE_TIMELINE stops the container" "$rc" "64"
 
 echo
 echo "passed: $pass, failed: $fail"

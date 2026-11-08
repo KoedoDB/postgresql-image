@@ -6,6 +6,8 @@
 #
 #   KOEDODB_RESTORE=latest                          the latest backup, and all the archived WAL after it
 #   KOEDODB_RESTORE=time KOEDODB_RESTORE_TARGET=... the time (e.g. 2026-11-07 09:30:00.000000+00), then promote
+#                        KOEDODB_RESTORE_TIMELINE=... (optional) the timeline to follow: current (the backup's), latest, or a number. Without it PostgreSQL's default (the newest) applies,
+#                        which cannot reach a time on a branch that an earlier restore left behind.
 #
 # A data directory that already holds a cluster is never touched: a restart of the Pod does not restore again. A directory left half restored by a Pod that was stopped is restored again
 # (--delta), because it has no PG_VERSION.
@@ -21,6 +23,11 @@ if [ -n "${KOEDODB_RESTORE:-}" ] && [ ! -s "$pgdata/PG_VERSION" ]; then
     time)
       [ -n "${KOEDODB_RESTORE_TARGET:-}" ] || { echo "koedodb-entrypoint: KOEDODB_RESTORE=time needs KOEDODB_RESTORE_TARGET" >&2; exit 64; }
       opts+=(--type=time "--target=$KOEDODB_RESTORE_TARGET" --target-action=promote)
+      if [ -n "${KOEDODB_RESTORE_TIMELINE:-}" ]; then
+        [[ "$KOEDODB_RESTORE_TIMELINE" =~ ^(current|latest|[0-9]+)$ ]] \
+          || { echo "koedodb-entrypoint: KOEDODB_RESTORE_TIMELINE must be current, latest or a number" >&2; exit 64; }
+        opts+=("--target-timeline=$KOEDODB_RESTORE_TIMELINE")
+      fi
       ;;
     *) echo "koedodb-entrypoint: KOEDODB_RESTORE must be latest or time, not '$KOEDODB_RESTORE'" >&2; exit 64 ;;
   esac
